@@ -12,8 +12,20 @@ use std::collections::VecDeque;
 const TICK_RATE: Duration = Duration::from_millis(500);
 const MUTED: Color = Color::DarkGray;
 const ACCENT: Color = Color::Cyan;
-const HISTORY_LEN: usize = 120;
 const RAM_COLOR: Color =  Color::Magenta;
+const HISTORY_LEN: usize = 120;
+
+enum SortBy {
+    Cpu,
+    Memory
+}
+
+struct ProcessRow {
+    pid: u32,
+    name: String,
+    cpu: f32,
+    memory_mb: u64,
+}
 
 struct App {
     running: bool,
@@ -23,6 +35,9 @@ struct App {
     disks: Disks,
     cpu_history: VecDeque<f64>,
     ram_history: VecDeque<f64>,
+    sort_by: SortBy,
+    processes: Vec<ProcessRow>,
+    table_state: TableState,
 }
 
 fn main() -> std::io::Result<()> {
@@ -44,6 +59,9 @@ impl App {
             disks:  Disks::new_with_refreshed_list(),
             cpu_history: VecDeque::with_capacity(HISTORY_LEN),
             ram_history: VecDeque::with_capacity(HISTORY_LEN),
+            processes: Vec::new(),
+            table_state: TableState::default().with_selected(0),
+            sort_by: SortBy::Cpu,
         };
 
         app.on_tick();
@@ -77,9 +95,36 @@ impl App {
         self.system.refresh_cpu_usage();
         self.system.refresh_memory();
         self.disks.refresh(true);
+        self.system.refresh_processes(ProcessesToUpdate::All, true);
+
         push_history(&mut self.cpu_history, self.system.global_cpu_usage() as f64);
         let ram = percent(self.system.used_memory(), self.system.total_memory());
         push_history(&mut self.ram_history, ram as f64);
+
+        self.collect_processes();
+    }
+
+    fn collect_processes(&mut self) {
+        let cores = self.system.cpus().len().max(1) as f32;
+        self.processes = self.system
+            .processes()
+            .values()
+            .map(|p| ProcessRow {
+                pid: p.pid().as_u32(),
+                name: p.name().to_string_lossy().into_owned(),
+                cpu: p.cpu_usage()/cores,
+                memory_mb: p.memory() / 1024 / 1024,
+            })
+            .collect();
+
+        self.sort_processes();
+    }
+
+    fn sort_processes(&mut self){
+        match self.sort_by {
+            SortBy::Cpu => self.processes.sort_by(|a, b| b.cpu.partial_cmp(&a.cpu).unwrap()),
+            SortBy::Memory => self.processes.sort_by(|a, b| b.memory_mb.cmp(&a.memory_mb)),
+        }
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -89,14 +134,21 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.running = false,
+            KeyCode::Char('j') | KeyCode::Down => self.table_state.select_next(),
+            KeyCode::Char('k') | KeyCode::Up => self.table_state.select_previous(),
+            KeyCode::Char('c') => {
+                self.sort_by = SortBy::Cpu;
+                self.sort_processes();
+            },
+            KeyCode::Char('m') => {
+                self.sort_by = SortBy::Memory;
+                self.sort_processes();
+            },
             _ => {}
         }
     }
 
     fn render(&mut self, frame: &mut Frame) {
-
-        let core_rows = self.system.cpus().len().div_ceil(2) as u16;
-        let top_height = (core_rows + 3).max(5) + 2;
 
         let [
             header,
@@ -121,7 +173,7 @@ impl App {
         self.render_cpu(frame, cpu);
         self.render_memory(frame, memory);
         self.render_history(frame, history);
-        frame.render_widget(panel("Processes"), processes);
+        self.render_processes(frame, processes);
         self.render_footer(frame, footer);
     }
 
@@ -304,6 +356,40 @@ impl App {
             .legend_position(None);
 
         frame.render_widget(chart, area);
+    }
+
+    fn render_processes(&mut self, frame: &mut Frame, area: Rect) {
+        let sort_name = match self.sort_by {
+            SortBy::Cpu => "CPU",
+            SortBy::Memory => "Memory",
+        };
+
+        let rows =  self.processes.iter().map(|p| {
+            Row::new([
+                p.pid.to_string(),
+                p.name.clone(),
+                format!("{:.1}%", p.cpu),
+                format!("{}vMB", p.memory_mb),
+            ])
+        });
+
+        let header = Row::new(["PID", "Name", "CPU %", "Memory"])
+            .style(Style::new().fg(ACCENT).bold());
+
+        let widths = [
+            Constraint::Length(8),
+            Constraint::Fill(1),
+            Constraint::Length(7),
+            Constraint::Length(10),
+        ];
+
+        let table = Table::new(rows, widths)
+            .header(header)
+            .block(panel(&format!("Processes sorted by {}", sort_name)))
+            .row_highlight_style(Style::new().bg(Color::Blue).fg(Color::White).bold())
+            .highlight_symbol(" |> ");
+
+        frame.render_stateful_widget(table, area, &mut self.table_state);
     }
 }
 
