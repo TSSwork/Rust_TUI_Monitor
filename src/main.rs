@@ -1,17 +1,19 @@
 use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::widgets::{Paragraph, Block, BorderType, Gauge, LineGauge, Sparkline};
+use ratatui::symbols::Marker;
+use ratatui::widgets::{Paragraph, Block, BorderType, Gauge, LineGauge, Sparkline, Axis, Chart, Dataset, GraphType, Table, TableState, Row};
 use ratatui::{DefaultTerminal, Frame};
-use ratatui::style::{Color, Style, Styled, Stylize};
+use ratatui::style::{Color, Style, Stylize};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, System, Disks};
+use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, System, Disks, ProcessesToUpdate};
 use std::collections::VecDeque;
 
 const TICK_RATE: Duration = Duration::from_millis(500);
 const MUTED: Color = Color::DarkGray;
 const ACCENT: Color = Color::Cyan;
 const HISTORY_LEN: usize = 120;
+const RAM_COLOR: Color =  Color::Magenta;
 
 struct App {
     running: bool,
@@ -20,6 +22,7 @@ struct App {
     os_name: String,
     disks: Disks,
     cpu_history: VecDeque<f64>,
+    ram_history: VecDeque<f64>,
 }
 
 fn main() -> std::io::Result<()> {
@@ -40,6 +43,7 @@ impl App {
             os_name: System::long_os_version().unwrap_or_else(|| "Unknown OS".into()),
             disks:  Disks::new_with_refreshed_list(),
             cpu_history: VecDeque::with_capacity(HISTORY_LEN),
+            ram_history: VecDeque::with_capacity(HISTORY_LEN),
         };
 
         app.on_tick();
@@ -73,7 +77,9 @@ impl App {
         self.system.refresh_cpu_usage();
         self.system.refresh_memory();
         self.disks.refresh(true);
-        push_history(&mut self.cpu_history, self.system.global_cpu_usage() as f64)
+        push_history(&mut self.cpu_history, self.system.global_cpu_usage() as f64);
+        let ram = percent(self.system.used_memory(), self.system.total_memory());
+        push_history(&mut self.ram_history, ram as f64);
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -114,7 +120,7 @@ impl App {
         self.render_header(frame, header);
         self.render_cpu(frame, cpu);
         self.render_memory(frame, memory);
-        frame.render_widget(panel("History"), history);
+        self.render_history(frame, history);
         frame.render_widget(panel("Processes"), processes);
         self.render_footer(frame, footer);
     }
@@ -254,6 +260,51 @@ impl App {
         }
 
     }
+
+    fn render_history(&mut self, frame: &mut Frame, area: Rect) {
+        let cpu_points = to_points(&self.cpu_history);
+        let ram_points = to_points(&self.ram_history);
+
+        let dataset = vec![
+            Dataset::default()
+                .name("cpu")
+                .marker(Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(ACCENT)
+                .data(&cpu_points),
+
+            Dataset::default()
+                .name("ram")
+                .marker(Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(RAM_COLOR)
+                .data(&ram_points)
+        ];
+
+        let x_axis = Axis::default()
+            .bounds([0.0,(HISTORY_LEN -1) as f64])
+            .labels(["60s ago", "30s","now"])
+            .style(MUTED);
+
+        let y_axis = Axis::default()
+            .bounds([0.0, 100.0])
+            .labels(["0%", "50%","100%"])
+            .style(MUTED);
+
+        let legend = Line::from(
+            vec!["cpu".fg(ACCENT), "\t|\t".fg(MUTED) ,"ram".fg(RAM_COLOR)]
+        ).right_aligned();
+
+        let block = panel("History 60s").title_top(legend);
+
+        let chart = Chart::new(dataset)
+            .block(block)
+            .x_axis(x_axis)
+            .y_axis(y_axis)
+            .legend_position(None);
+
+        frame.render_widget(chart, area);
+    }
 }
 
 fn panel(title: &str) -> Block<'static> {
@@ -302,4 +353,13 @@ fn push_history(history: &mut VecDeque<f64>, vlaue: f64) {
     if history.len() > HISTORY_LEN {
         history.pop_front();
     }
+}
+
+fn to_points(history: &VecDeque<f64>) -> Vec<(f64, f64)> {
+    let offset = HISTORY_LEN - history.len();
+
+    history.iter()
+        .enumerate()
+        .map(|(i, value)| ((offset+i) as f64, *value))
+        .collect()
 }
