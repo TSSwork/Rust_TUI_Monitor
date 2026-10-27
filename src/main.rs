@@ -223,23 +223,36 @@ impl App {
     }
 
     fn render_memory(&mut self, frame: &mut Frame, area: Rect) {
-        let gb = |bytes: u64| bytes as f64 / 1024.0 / 1024.0 / 1024.0;
+        let block = panel("Memory");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let [ram_area, swap_area, disk_area] = Layout::vertical(
+            [Constraint::Length(1); 3]
+        ).spacing(1).areas(inner);
+
         let sys = &self.system;
+        frame.render_widget(
+            used_gauge("RAM", sys.used_memory(), sys.total_memory()),
+            ram_area
+        );
 
-        let lines = vec![
-            Line::from(format!(
-                "RAM {:.1}/{:.1} GB",
-                gb(sys.used_memory()),
-                gb(sys.total_memory())
-            )),
-            Line::from(format!(
-                "Swap {:.1}/{:.1} GB",
-                gb(sys.used_swap()),
-                gb(sys.total_swap())
-            ))
-        ];
+        frame.render_widget(
+            used_gauge("SWAP", sys.used_swap(), sys.total_swap()),
+            swap_area
+        );
 
-        frame.render_widget(Paragraph::new(lines).block(panel("Memory")), area);
+        if let Some(disk) = self.disks.list().first() {
+            let total = disk.total_space();
+            let used = total - disk.available_space();
+            let label = format!("Disk {}", disk.mount_point().display());
+
+            frame.render_widget(
+                used_gauge(&label, used, total),
+                disk_area
+            );
+        }
+
     }
 }
 
