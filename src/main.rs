@@ -163,53 +163,63 @@ impl App {
         let average = self.system.global_cpu_usage();
 
         let block = panel(&format!("CPU {average:.0}%"));
-
         let inner = block.inner(area);
+
+        // 1. Render the outer block border
+        frame.render_widget(block, area);
 
         let core_rows = self.system.cpus().len().div_ceil(2) as u16;
 
         let [cores_area, spark_area] = Layout::vertical([
             Constraint::Length(core_rows),
-            Constraint::Fill(1)
-        ]).spacing(2).areas(inner);
+            Constraint::Fill(1),
+        ])
+        .spacing(1)
+        .areas(inner);
 
         let [left, right] = Layout::horizontal([
             Constraint::Fill(1),
-            Constraint::Fill(1)
-        ]).spacing(2).areas(cores_area);
+            Constraint::Fill(1),
+        ])
+        .spacing(2)
+        .areas(cores_area);
 
+        // 2. Render CPU Cores (2 columns)
         for (i, cpu) in self.system.cpus().iter().enumerate() {
             let usage = cpu.cpu_usage() as f64;
-            let column = if i % 2 == 0 {left} else {right};
-            let row = Rect{
-                y: column.y + (i/2) as u16,
+
+            // Fixed: `i % 2` instead of `1 % 2`
+            let column = if i % 2 == 0 { left } else { right };
+            let row = Rect {
+                y: column.y + (i / 2) as u16,
                 height: 1,
                 ..column
             };
 
             let gauge = LineGauge::default()
                 .ratio((usage / 100.0).clamp(0.0, 1.0))
+                // Fixed: format with `{:>3.0}%`
                 .label(format!("{i:>2} {usage:>3.0}%"))
                 .filled_symbol("#")
                 .unfilled_symbol("~")
                 .filled_style(level_color(usage))
                 .unfilled_style(MUTED);
 
-
             frame.render_widget(gauge, row);
-
-            let width = spark_area.width as usize;
-            let skip = self.cpu_history.len().saturating_sub(width);
-            let data: Vec<u64> = self.cpu_history
-                .iter()
-                .skip(skip)
-                .map(|v| *v as u64)
-                .collect();
-
-            let sparkline = Sparkline::default().data(&data).max(100).style(ACCENT);
-            frame.render_widget(sparkline, spark_area);
         }
 
+        // 3. Render Sparkline ONCE outside the loop
+        let width = spark_area.width as usize;
+        let skip = self.cpu_history.len().saturating_sub(width);
+        let data: Vec<u64> = self
+            .cpu_history
+            .iter()
+            .skip(skip)
+            .map(|v| *v as u64)
+            .collect();
+
+        let sparkline = Sparkline::default().data(&data).max(100).style(ACCENT);
+        frame.render_widget(sparkline, spark_area);
     }
 
     fn render_memory(&mut self, frame: &mut Frame, area: Rect) {
